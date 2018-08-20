@@ -11,7 +11,7 @@ namespace AsnBench
 		static void Main(string[] args)
 		{
 			BenchmarkRunner.Run<X509Benchmark>();
-			//new X509Benchmark().AsnReader();
+			//new X509Benchmark().Serializer_Cached();
 			//AsnSerializerGenerator.Deserialize<CertificateAsn>(X509Benchmark.certificateBytes, AsnEncodingRules.DER);
 		}
 	}
@@ -54,16 +54,24 @@ jNOh1zy7xgnAWHZ9H/BgpgnX49QxcHmvDNCopJJRqxKRV/mJSgNkhw==
 ";
 
 		internal static byte[] certificateBytes;
+		//internal static AsnSerializer.Deserializer deserializer;
 
 		static X509Benchmark()
 		{
 			certificateBytes = Convert.FromBase64String(MicrosoftDotComBase64);
+			//deserializer = AsnSerializer.GetDeserializer(typeof(CertificateAsn), null);
 		}
 
 		[Benchmark]
 		public void Serializer_Cached()
 		{
 			AsnSerializer.Deserialize<CertificateAsn>(certificateBytes, AsnEncodingRules.DER);
+			/*AsnReader reader = new AsnReader(certificateBytes, AsnEncodingRules.DER);
+
+			CertificateAsn t = (CertificateAsn)deserializer(reader);
+
+			reader.ThrowIfNotEmpty();
+			//return t;*/
 		}
 
 		[Benchmark]

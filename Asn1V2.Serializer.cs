@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -60,10 +61,17 @@ namespace System.Security.Cryptography.Asn1
 
 		private delegate void Serializer(object value, AsnWriter writer);
 		private delegate object Deserializer(AsnReader reader);
+		private delegate object CustomTypeDeserializer(AsnReader reader, Asn1Tag expectedTag);
 		private delegate bool TryDeserializer<T>(AsnReader reader, out T value);
 
 		private static readonly ConcurrentDictionary<Type, FieldInfo[]> s_orderedFields =
 			new ConcurrentDictionary<Type, FieldInfo[]>();
+		private static readonly ConcurrentDictionary<Type, CustomTypeDeserializer> s_customTypeDeserializers =
+			new ConcurrentDictionary<Type, CustomTypeDeserializer>();
+		private static readonly ConcurrentDictionary<object, SerializerFieldData> s_fieldDatas =
+			new ConcurrentDictionary<object, SerializerFieldData>();
+		private static readonly ConcurrentDictionary<Type, Dictionary<(TagClass, int), LinkedList<FieldInfo>>> s_lookupTables =
+			new ConcurrentDictionary<Type, Dictionary<(TagClass, int), LinkedList<FieldInfo>>>();
 
 		private static Deserializer TryOrFail<T>(TryDeserializer<T> tryDeserializer)
 		{
@@ -150,6 +158,20 @@ namespace System.Security.Cryptography.Asn1
 				   (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(Nullable<>));
 		}
 
+		private static Dictionary<(TagClass, int), LinkedList<FieldInfo>> GetChoiceLookup(
+			Type typeT)
+		{
+			return s_lookupTables.GetOrAdd(
+				typeT,
+				t =>
+				{
+					var newLookup = new Dictionary<(TagClass, int), LinkedList<FieldInfo>>();
+					LinkedList<FieldInfo> fields = new LinkedList<FieldInfo>();
+					PopulateChoiceLookup(newLookup, typeT, fields);
+					return newLookup;
+				});
+		}
+
 		private static void PopulateChoiceLookup(
 			Dictionary<(TagClass, int), LinkedList<FieldInfo>> lookup,
 			Type typeT,
@@ -233,10 +255,7 @@ namespace System.Security.Cryptography.Asn1
 		{
 			// Ensure that the type is consistent with a Choice by using the same logic
 			// as the deserializer.
-			var lookup = new Dictionary<(TagClass, int), LinkedList<FieldInfo>>();
-			LinkedList<FieldInfo> fields = new LinkedList<FieldInfo>();
-			PopulateChoiceLookup(lookup, typeT, fields);
-
+			var lookup = GetChoiceLookup(typeT);
 			FieldInfo relevantField = null;
 			object relevantObject = null;
 
@@ -292,10 +311,7 @@ namespace System.Security.Cryptography.Asn1
 
 		private static object DeserializeChoice(AsnReader reader, Type typeT)
 		{
-			var lookup = new Dictionary<(TagClass, int), LinkedList<FieldInfo>>();
-			LinkedList<FieldInfo> fields = new LinkedList<FieldInfo>();
-			PopulateChoiceLookup(lookup, typeT, fields);
-
+			var lookup = GetChoiceLookup(typeT);
 			Asn1Tag next = reader.PeekTag();
 
 			if (next == Asn1Tag.Null)
@@ -352,32 +368,46 @@ namespace System.Security.Cryptography.Asn1
 			writer.PopSequence(tag);
 		}
 
-		private static object DeserializeCustomType(AsnReader reader, Type typeT, Asn1Tag expectedTag)
+		private static Deserializer GetCustomTypeDeserializer(Type typeT, Asn1Tag expectedTag)
 		{
-			object target = FormatterServices.GetUninitializedObject(typeT);
+			CustomTypeDeserializer customTypeDeserializer;
 
-			AsnReader sequence = reader.ReadSequence(expectedTag);
-
-			foreach (FieldInfo fieldInfo in typeT.GetFields(FieldFlags))
-			{
-				Deserializer deserializer = GetDeserializer(fieldInfo.FieldType, fieldInfo);
-				try
+			customTypeDeserializer = s_customTypeDeserializers.GetOrAdd(
+				typeT,
+				t =>
 				{
-					fieldInfo.SetValue(target, deserializer(sequence));
-				}
-				catch (Exception e)
-				{
-					throw new CryptographicException(
-						SR.Format(
-							SR.Cryptography_AsnSerializer_SetValueException,
-							fieldInfo.Name,
-							fieldInfo.DeclaringType.FullName),
-						e);
-				}
-			}
+					ParameterExpression readerParameter = Expression.Parameter(typeof(AsnReader));
+					ParameterExpression expectedTagParameter = Expression.Parameter(typeof(Asn1Tag));
+					ParameterExpression target = Expression.Variable(typeT, "target");
+					ParameterExpression seqence = Expression.Variable(typeof(AsnReader), "sequence");
+					List<Expression> blockExpressions = new List<Expression>();
 
-			sequence.ThrowIfNotEmpty();
-			return target;
+					blockExpressions.Add(Expression.Assign(target, Expression.New(typeT)));
+					blockExpressions.Add(Expression.Assign(seqence, Expression.Call(readerParameter, typeof(AsnReader).GetMethod("ReadSequence", new[] { typeof(Asn1Tag) }), expectedTagParameter)));
+
+					foreach (FieldInfo fieldInfo in typeT.GetFields(FieldFlags))
+					{
+						Deserializer deserializer = GetDeserializer(fieldInfo.FieldType, fieldInfo);
+						Expression invokeDeserialize = 
+							Expression.Invoke(Expression.Constant(deserializer), seqence);
+
+						// NOTE: Originally the field setter was wrapped in try/catch/throw block. It should not be necessary
+						// if the expressions are composed properly, but in that case it may have to be handled in some other
+						// way.
+						blockExpressions.Add(Expression.Assign(Expression.Field(target, fieldInfo), Expression.Convert(invokeDeserialize, fieldInfo.FieldType)));
+					}
+
+					blockExpressions.Add(Expression.Call(seqence, typeof(AsnReader).GetMethod("ThrowIfNotEmpty")));
+					blockExpressions.Add(Expression.Convert(target, typeof(object)));
+
+					return Expression.Lambda<CustomTypeDeserializer>(
+						Expression.Block(
+							new[] { target, seqence },
+							blockExpressions.ToArray()),
+						readerParameter, expectedTagParameter).Compile();
+				});
+
+			return reader => customTypeDeserializer(reader, expectedTag);
 		}
 
 		private static Deserializer ExplicitValueDeserializer(Deserializer valueDeserializer, Asn1Tag expectedTag)
@@ -1026,7 +1056,7 @@ namespace System.Security.Cryptography.Asn1
 			{
 				if (fieldData.TagType == UniversalTagNumber.Sequence)
 				{
-					return reader => DeserializeCustomType(reader, typeT, expectedTag);
+					return GetCustomTypeDeserializer(typeT, expectedTag);
 				}
 			}
 
@@ -1066,248 +1096,255 @@ namespace System.Security.Cryptography.Asn1
 		private static void GetFieldInfo(
 			Type typeT,
 			FieldInfo fieldInfo,
-			out SerializerFieldData serializerFieldData)
+			out SerializerFieldData serializerFieldDataOut)
 		{
-			serializerFieldData = new SerializerFieldData();
-
-			object[] typeAttrs = fieldInfo?.GetCustomAttributes(typeof(AsnTypeAttribute), false) ??
-								 Array.Empty<object>();
-
-			if (typeAttrs.Length > 1)
-			{
-				throw new AsnSerializationConstraintException(
-					SR.Format(
-						fieldInfo.Name,
-						fieldInfo.DeclaringType.FullName,
-						typeof(AsnTypeAttribute).FullName));
-			}
-
-			Type unpackedType = UnpackIfNullable(typeT);
-
-			if (typeAttrs.Length == 1)
-			{
-				Type[] expectedTypes;
-				object attr = typeAttrs[0];
-				serializerFieldData.WasCustomized = true;
-
-				if (attr is AnyValueAttribute)
+			serializerFieldDataOut = s_fieldDatas.GetOrAdd(
+				(object)fieldInfo ?? typeT,
+				ignored =>
 				{
-					serializerFieldData.IsAny = true;
-					expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
-				}
-				else if (attr is IntegerAttribute)
-				{
-					expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
-					serializerFieldData.TagType = UniversalTagNumber.Integer;
-				}
-				else if (attr is BitStringAttribute)
-				{
-					expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
-					serializerFieldData.TagType = UniversalTagNumber.BitString;
-				}
-				else if (attr is OctetStringAttribute)
-				{
-					expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
-					serializerFieldData.TagType = UniversalTagNumber.OctetString;
-				}
-				else if (attr is ObjectIdentifierAttribute oid)
-				{
-					serializerFieldData.PopulateOidFriendlyName = oid.PopulateFriendlyName;
-					expectedTypes = new[] { typeof(Oid), typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.ObjectIdentifier;
+					var serializerFieldData = new SerializerFieldData();
 
-					if (oid.PopulateFriendlyName && unpackedType == typeof(string))
+					object[] typeAttrs = fieldInfo?.GetCustomAttributes(typeof(AsnTypeAttribute), false) ??
+										 Array.Empty<object>();
+
+					if (typeAttrs.Length > 1)
 					{
 						throw new AsnSerializationConstraintException(
 							SR.Format(
-								SR.Cryptography_AsnSerializer_PopulateFriendlyNameOnString,
 								fieldInfo.Name,
 								fieldInfo.DeclaringType.FullName,
-								typeof(Oid).FullName));
+								typeof(AsnTypeAttribute).FullName));
 					}
-				}
-				else if (attr is BMPStringAttribute)
-				{
-					expectedTypes = new[] { typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.BMPString;
-				}
-				else if (attr is IA5StringAttribute)
-				{
-					expectedTypes = new[] { typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.IA5String;
-				}
-				else if (attr is UTF8StringAttribute)
-				{
-					expectedTypes = new[] { typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.UTF8String;
-				}
-				else if (attr is PrintableStringAttribute)
-				{
-					expectedTypes = new[] { typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.PrintableString;
-				}
-				else if (attr is VisibleStringAttribute)
-				{
-					expectedTypes = new[] { typeof(string) };
-					serializerFieldData.TagType = UniversalTagNumber.VisibleString;
-				}
-				else if (attr is SequenceOfAttribute)
-				{
-					serializerFieldData.IsCollection = true;
-					expectedTypes = null;
-					serializerFieldData.TagType = UniversalTagNumber.SequenceOf;
-				}
-				else if (attr is SetOfAttribute)
-				{
-					serializerFieldData.IsCollection = true;
-					expectedTypes = null;
-					serializerFieldData.TagType = UniversalTagNumber.SetOf;
-				}
-				else if (attr is UtcTimeAttribute utcAttr)
-				{
-					expectedTypes = new[] { typeof(DateTimeOffset) };
-					serializerFieldData.TagType = UniversalTagNumber.UtcTime;
 
-					if (utcAttr.TwoDigitYearMax != 0)
+					Type unpackedType = UnpackIfNullable(typeT);
+
+					if (typeAttrs.Length == 1)
 					{
-						serializerFieldData.TwoDigitYearMax = utcAttr.TwoDigitYearMax;
+						Type[] expectedTypes;
+						object attr = typeAttrs[0];
+						serializerFieldData.WasCustomized = true;
 
-						if (serializerFieldData.TwoDigitYearMax < 99)
+						if (attr is AnyValueAttribute)
+						{
+							serializerFieldData.IsAny = true;
+							expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
+						}
+						else if (attr is IntegerAttribute)
+						{
+							expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
+							serializerFieldData.TagType = UniversalTagNumber.Integer;
+						}
+						else if (attr is BitStringAttribute)
+						{
+							expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
+							serializerFieldData.TagType = UniversalTagNumber.BitString;
+						}
+						else if (attr is OctetStringAttribute)
+						{
+							expectedTypes = new[] { typeof(ReadOnlyMemory<byte>) };
+							serializerFieldData.TagType = UniversalTagNumber.OctetString;
+						}
+						else if (attr is ObjectIdentifierAttribute oid)
+						{
+							serializerFieldData.PopulateOidFriendlyName = oid.PopulateFriendlyName;
+							expectedTypes = new[] { typeof(Oid), typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.ObjectIdentifier;
+
+							if (oid.PopulateFriendlyName && unpackedType == typeof(string))
+							{
+								throw new AsnSerializationConstraintException(
+									SR.Format(
+										SR.Cryptography_AsnSerializer_PopulateFriendlyNameOnString,
+										fieldInfo.Name,
+										fieldInfo.DeclaringType.FullName,
+										typeof(Oid).FullName));
+							}
+						}
+						else if (attr is BMPStringAttribute)
+						{
+							expectedTypes = new[] { typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.BMPString;
+						}
+						else if (attr is IA5StringAttribute)
+						{
+							expectedTypes = new[] { typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.IA5String;
+						}
+						else if (attr is UTF8StringAttribute)
+						{
+							expectedTypes = new[] { typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.UTF8String;
+						}
+						else if (attr is PrintableStringAttribute)
+						{
+							expectedTypes = new[] { typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.PrintableString;
+						}
+						else if (attr is VisibleStringAttribute)
+						{
+							expectedTypes = new[] { typeof(string) };
+							serializerFieldData.TagType = UniversalTagNumber.VisibleString;
+						}
+						else if (attr is SequenceOfAttribute)
+						{
+							serializerFieldData.IsCollection = true;
+							expectedTypes = null;
+							serializerFieldData.TagType = UniversalTagNumber.SequenceOf;
+						}
+						else if (attr is SetOfAttribute)
+						{
+							serializerFieldData.IsCollection = true;
+							expectedTypes = null;
+							serializerFieldData.TagType = UniversalTagNumber.SetOf;
+						}
+						else if (attr is UtcTimeAttribute utcAttr)
+						{
+							expectedTypes = new[] { typeof(DateTimeOffset) };
+							serializerFieldData.TagType = UniversalTagNumber.UtcTime;
+
+							if (utcAttr.TwoDigitYearMax != 0)
+							{
+								serializerFieldData.TwoDigitYearMax = utcAttr.TwoDigitYearMax;
+
+								if (serializerFieldData.TwoDigitYearMax < 99)
+								{
+									throw new AsnSerializationConstraintException(
+										SR.Format(
+											SR.Cryptography_AsnSerializer_UtcTimeTwoDigitYearMaxTooSmall,
+											fieldInfo.Name,
+											fieldInfo.DeclaringType.FullName,
+											serializerFieldData.TwoDigitYearMax));
+								}
+							}
+						}
+						else if (attr is GeneralizedTimeAttribute genTimeAttr)
+						{
+							expectedTypes = new[] { typeof(DateTimeOffset) };
+							serializerFieldData.TagType = UniversalTagNumber.GeneralizedTime;
+							serializerFieldData.DisallowGeneralizedTimeFractions = genTimeAttr.DisallowFractions;
+						}
+						else
+						{
+							Debug.Fail($"Unregistered {nameof(AsnTypeAttribute)} kind: {attr.GetType().FullName}");
+							throw new CryptographicException();
+						}
+
+						Debug.Assert(serializerFieldData.IsCollection || expectedTypes != null);
+
+						if (!serializerFieldData.IsCollection && Array.IndexOf(expectedTypes, unpackedType) < 0)
 						{
 							throw new AsnSerializationConstraintException(
 								SR.Format(
-									SR.Cryptography_AsnSerializer_UtcTimeTwoDigitYearMaxTooSmall,
+									SR.Cryptography_AsnSerializer_UnexpectedTypeForAttribute,
 									fieldInfo.Name,
-									fieldInfo.DeclaringType.FullName,
-									serializerFieldData.TwoDigitYearMax));
+									fieldInfo.DeclaringType.Namespace,
+									unpackedType.FullName,
+									string.Join(", ", expectedTypes.Select(t => t.FullName))));
 						}
 					}
-				}
-				else if (attr is GeneralizedTimeAttribute genTimeAttr)
-				{
-					expectedTypes = new[] { typeof(DateTimeOffset) };
-					serializerFieldData.TagType = UniversalTagNumber.GeneralizedTime;
-					serializerFieldData.DisallowGeneralizedTimeFractions = genTimeAttr.DisallowFractions;
-				}
-				else
-				{
-					Debug.Fail($"Unregistered {nameof(AsnTypeAttribute)} kind: {attr.GetType().FullName}");
-					throw new CryptographicException();
-				}
 
-				Debug.Assert(serializerFieldData.IsCollection || expectedTypes != null);
+					var defaultValueAttr = fieldInfo?.GetCustomAttribute<DefaultValueAttribute>(false);
+					serializerFieldData.DefaultContents = defaultValueAttr?.EncodedBytes;
 
-				if (!serializerFieldData.IsCollection && Array.IndexOf(expectedTypes, unpackedType) < 0)
-				{
-					throw new AsnSerializationConstraintException(
-						SR.Format(
-							SR.Cryptography_AsnSerializer_UnexpectedTypeForAttribute,
-							fieldInfo.Name,
-							fieldInfo.DeclaringType.Namespace,
-							unpackedType.FullName,
-							string.Join(", ", expectedTypes.Select(t => t.FullName))));
-				}
-			}
-
-			var defaultValueAttr = fieldInfo?.GetCustomAttribute<DefaultValueAttribute>(false);
-			serializerFieldData.DefaultContents = defaultValueAttr?.EncodedBytes;
-
-			if (serializerFieldData.TagType == null && !serializerFieldData.IsAny)
-			{
-				if (unpackedType == typeof(bool))
-				{
-					serializerFieldData.TagType = UniversalTagNumber.Boolean;
-				}
-				else if (unpackedType == typeof(sbyte) ||
-						 unpackedType == typeof(byte) ||
-						 unpackedType == typeof(short) ||
-						 unpackedType == typeof(ushort) ||
-						 unpackedType == typeof(int) ||
-						 unpackedType == typeof(uint) ||
-						 unpackedType == typeof(long) ||
-						 unpackedType == typeof(ulong) ||
-						 unpackedType == typeof(BigInteger))
-				{
-					serializerFieldData.TagType = UniversalTagNumber.Integer;
-				}
-				else if (unpackedType.IsLayoutSequential)
-				{
-					serializerFieldData.TagType = UniversalTagNumber.Sequence;
-				}
-				else if (unpackedType == typeof(ReadOnlyMemory<byte>) ||
-					unpackedType == typeof(string) ||
-					unpackedType == typeof(DateTimeOffset))
-				{
-					throw new AsnAmbiguousFieldTypeException(fieldInfo, unpackedType);
-				}
-				else if (unpackedType == typeof(Oid))
-				{
-					serializerFieldData.TagType = UniversalTagNumber.ObjectIdentifier;
-				}
-				else if (unpackedType.IsArray)
-				{
-					serializerFieldData.TagType = UniversalTagNumber.SequenceOf;
-				}
-				else if (unpackedType.IsEnum)
-				{
-					if (typeT.GetCustomAttributes(typeof(FlagsAttribute), false).Length > 0)
+					if (serializerFieldData.TagType == null && !serializerFieldData.IsAny)
 					{
-						serializerFieldData.TagType = UniversalTagNumber.BitString;
+						if (unpackedType == typeof(bool))
+						{
+							serializerFieldData.TagType = UniversalTagNumber.Boolean;
+						}
+						else if (unpackedType == typeof(sbyte) ||
+								 unpackedType == typeof(byte) ||
+								 unpackedType == typeof(short) ||
+								 unpackedType == typeof(ushort) ||
+								 unpackedType == typeof(int) ||
+								 unpackedType == typeof(uint) ||
+								 unpackedType == typeof(long) ||
+								 unpackedType == typeof(ulong) ||
+								 unpackedType == typeof(BigInteger))
+						{
+							serializerFieldData.TagType = UniversalTagNumber.Integer;
+						}
+						else if (unpackedType.IsLayoutSequential)
+						{
+							serializerFieldData.TagType = UniversalTagNumber.Sequence;
+						}
+						else if (unpackedType == typeof(ReadOnlyMemory<byte>) ||
+							unpackedType == typeof(string) ||
+							unpackedType == typeof(DateTimeOffset))
+						{
+							throw new AsnAmbiguousFieldTypeException(fieldInfo, unpackedType);
+						}
+						else if (unpackedType == typeof(Oid))
+						{
+							serializerFieldData.TagType = UniversalTagNumber.ObjectIdentifier;
+						}
+						else if (unpackedType.IsArray)
+						{
+							serializerFieldData.TagType = UniversalTagNumber.SequenceOf;
+						}
+						else if (unpackedType.IsEnum)
+						{
+							if (typeT.GetCustomAttributes(typeof(FlagsAttribute), false).Length > 0)
+							{
+								serializerFieldData.TagType = UniversalTagNumber.BitString;
+							}
+							else
+							{
+								serializerFieldData.TagType = UniversalTagNumber.Enumerated;
+							}
+						}
+						else if (fieldInfo != null)
+						{
+							Debug.Fail($"No tag type bound for {fieldInfo.DeclaringType.FullName}.{fieldInfo.Name}");
+							throw new AsnSerializationConstraintException();
+						}
 					}
-					else
+
+					serializerFieldData.IsOptional = fieldInfo?.GetCustomAttribute<OptionalValueAttribute>(false) != null;
+
+					if (serializerFieldData.IsOptional && !CanBeNull(typeT))
 					{
-						serializerFieldData.TagType = UniversalTagNumber.Enumerated;
+						throw new AsnSerializationConstraintException(
+							SR.Format(
+								SR.Cryptography_AsnSerializer_Optional_NonNullableField,
+								fieldInfo.Name,
+								fieldInfo.DeclaringType.FullName));
 					}
-				}
-				else if (fieldInfo != null)
-				{
-					Debug.Fail($"No tag type bound for {fieldInfo.DeclaringType.FullName}.{fieldInfo.Name}");
-					throw new AsnSerializationConstraintException();
-				}
-			}
 
-			serializerFieldData.IsOptional = fieldInfo?.GetCustomAttribute<OptionalValueAttribute>(false) != null;
+					bool isChoice = GetChoiceAttribute(typeT) != null;
 
-			if (serializerFieldData.IsOptional && !CanBeNull(typeT))
-			{
-				throw new AsnSerializationConstraintException(
-					SR.Format(
-						SR.Cryptography_AsnSerializer_Optional_NonNullableField,
-						fieldInfo.Name,
-						fieldInfo.DeclaringType.FullName));
-			}
+					var tagOverride = fieldInfo?.GetCustomAttribute<ExpectedTagAttribute>(false);
 
-			bool isChoice = GetChoiceAttribute(typeT) != null;
+					if (tagOverride != null)
+					{
+						if (isChoice && !tagOverride.ExplicitTag)
+						{
+							throw new AsnSerializationConstraintException(
+								SR.Format(
+									SR.Cryptography_AsnSerializer_SpecificTagChoice,
+									fieldInfo.Name,
+									fieldInfo.DeclaringType.FullName,
+									typeT.FullName));
+						}
 
-			var tagOverride = fieldInfo?.GetCustomAttribute<ExpectedTagAttribute>(false);
+						// This will throw for unmapped TagClass values
+						serializerFieldData.ExpectedTag = new Asn1Tag(tagOverride.TagClass, tagOverride.TagValue);
+						serializerFieldData.HasExplicitTag = tagOverride.ExplicitTag;
+						serializerFieldData.SpecifiedTag = true;
+						return serializerFieldData;
+					}
 
-			if (tagOverride != null)
-			{
-				if (isChoice && !tagOverride.ExplicitTag)
-				{
-					throw new AsnSerializationConstraintException(
-						SR.Format(
-							SR.Cryptography_AsnSerializer_SpecificTagChoice,
-							fieldInfo.Name,
-							fieldInfo.DeclaringType.FullName,
-							typeT.FullName));
-				}
+					if (isChoice)
+					{
+						serializerFieldData.TagType = null;
+					}
 
-				// This will throw for unmapped TagClass values
-				serializerFieldData.ExpectedTag = new Asn1Tag(tagOverride.TagClass, tagOverride.TagValue);
-				serializerFieldData.HasExplicitTag = tagOverride.ExplicitTag;
-				serializerFieldData.SpecifiedTag = true;
-				return;
-			}
+					serializerFieldData.SpecifiedTag = false;
+					serializerFieldData.HasExplicitTag = false;
+					serializerFieldData.ExpectedTag = new Asn1Tag(serializerFieldData.TagType.GetValueOrDefault());
 
-			if (isChoice)
-			{
-				serializerFieldData.TagType = null;
-			}
-
-			serializerFieldData.SpecifiedTag = false;
-			serializerFieldData.HasExplicitTag = false;
-			serializerFieldData.ExpectedTag = new Asn1Tag(serializerFieldData.TagType.GetValueOrDefault());
+					return serializerFieldData;
+				});
 		}
 
 		private static Type UnpackIfNullable(Type typeT)
@@ -1320,21 +1357,21 @@ namespace System.Security.Cryptography.Asn1
 			if (typeT == typeof(bool))
 				return reader => reader.ReadBoolean(tag);
 			if (typeT == typeof(int))
-				return TryOrFail((AsnReader reader, out int value) => reader.TryReadInt32(tag, out value));
+				return reader => reader.ReadInt32(tag);
 			if (typeT == typeof(uint))
-				return TryOrFail((AsnReader reader, out uint value) => reader.TryReadUInt32(tag, out value));
+				return reader => reader.ReadUInt32(tag);
 			if (typeT == typeof(short))
-				return TryOrFail((AsnReader reader, out short value) => reader.TryReadInt16(tag, out value));
+				return reader => reader.ReadInt16(tag);
 			if (typeT == typeof(ushort))
-				return TryOrFail((AsnReader reader, out ushort value) => reader.TryReadUInt16(tag, out value));
-			if (typeT == typeof(byte))
-				return TryOrFail((AsnReader reader, out byte value) => reader.TryReadUInt8(tag, out value));
+				return reader => reader.ReadUInt16(tag);
 			if (typeT == typeof(sbyte))
-				return TryOrFail((AsnReader reader, out sbyte value) => reader.TryReadInt8(tag, out value));
+				return reader => reader.ReadInt8(tag);
+			if (typeT == typeof(byte))
+				return reader => reader.ReadUInt8(tag);
 			if (typeT == typeof(long))
-				return TryOrFail((AsnReader reader, out long value) => reader.TryReadInt64(tag, out value));
+				return reader => reader.ReadInt64(tag);
 			if (typeT == typeof(ulong))
-				return TryOrFail((AsnReader reader, out ulong value) => reader.TryReadUInt64(tag, out value));
+				return reader => reader.ReadUInt64(tag);
 
 			throw new AsnSerializationConstraintException(
 				SR.Format(

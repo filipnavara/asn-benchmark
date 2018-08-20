@@ -322,7 +322,12 @@ namespace System.Security.Cryptography.Asn1
             return !left.Equals(right);
         }
 
-        public override string ToString()
+		public bool HasSameClassAndValue(Asn1Tag other)
+		{
+			return _tagValue == other._tagValue && TagClass == other.TagClass;
+		}
+
+		public override string ToString()
         {
             const string ConstructedPrefix = "Constructed ";
             string classAndValue;

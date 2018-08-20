@@ -7,18 +7,8 @@ using System.Security.Cryptography.X509Certificates;
 
 namespace System.Security.Cryptography.Asn1
 {
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct X509ExtensionAsn
+	internal partial struct X509ExtensionAsn
     {
-        [ObjectIdentifier]
-        internal string ExtnId;
-
-        [DefaultValue(0x01, 0x01, 0x00)]
-        internal bool Critical;
-
-        [OctetString]
-        internal ReadOnlyMemory<byte> ExtnValue;
-
         public X509ExtensionAsn(X509Extension extension)
         {
             if (extension == null)
@@ -26,7 +16,7 @@ namespace System.Security.Cryptography.Asn1
                 throw new ArgumentNullException(nameof(extension));
             }
 
-            ExtnId = extension.Oid.Value;
+            ExtnId = extension.Oid;
             Critical = extension.Critical;
             ExtnValue = extension.RawData;
         }

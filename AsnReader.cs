@@ -26,11 +26,11 @@ namespace System.Security.Cryptography.Asn1
 
         public bool HasData => !_data.IsEmpty;
 
-        public AsnReader(ReadOnlyMemory<byte> data, AsnEncodingRules ruleSet)
+		public AsnReader(ReadOnlyMemory<byte> data, AsnEncodingRules ruleSet)
         {
             CheckEncodingRules(ruleSet);
 
-            _data = data;
+			_data = data;
             _ruleSet = ruleSet;
         }
 
@@ -1089,7 +1089,46 @@ namespace System.Security.Cryptography.Asn1
             return read;
         }
 
-        public TFlagsEnum GetNamedBitListValue<TFlagsEnum>() where TFlagsEnum : struct =>
+		public byte[] ReadBitString(out int unusedBitCount)
+		{
+			return ReadBitString(Asn1Tag.PrimitiveBitString, out unusedBitCount);
+		}
+
+		public byte[] ReadBitString(Asn1Tag expectedTag, out int unusedBitCount)
+		{
+			ReadOnlyMemory<byte> memory;
+
+			if (TryGetPrimitiveBitStringValue(expectedTag, out unusedBitCount, out memory))
+			{
+				return memory.ToArray();
+			}
+
+			memory = PeekEncodedValue();
+
+			// Guaranteed long enough
+			byte[] rented = ArrayPool<byte>.Shared.Rent(memory.Length);
+			int dataLength = 0;
+
+			try
+			{
+				if (!TryCopyBitStringBytes(expectedTag, rented, out unusedBitCount, out dataLength))
+				{
+					Debug.Fail("TryCopyBitStringBytes failed with a pre-allocated buffer");
+					throw new CryptographicException();
+				}
+
+				byte[] alloc = new byte[dataLength];
+				rented.AsSpan(0, dataLength).CopyTo(alloc);
+				return alloc;
+			}
+			finally
+			{
+				CryptographicOperations.ZeroMemory(rented.AsSpan(0, dataLength));
+				ArrayPool<byte>.Shared.Return(rented);
+			}
+		}
+
+		public TFlagsEnum GetNamedBitListValue<TFlagsEnum>() where TFlagsEnum : struct =>
             GetNamedBitListValue<TFlagsEnum>(Asn1Tag.PrimitiveBitString);
 
         public TFlagsEnum GetNamedBitListValue<TFlagsEnum>(Asn1Tag expectedTag) where TFlagsEnum : struct
@@ -1602,7 +1641,46 @@ namespace System.Security.Cryptography.Asn1
             return copied;
         }
 
-        public void ReadNull() => ReadNull(Asn1Tag.Null);
+		public byte[] ReadOctetString()
+		{
+			return ReadOctetString(Asn1Tag.PrimitiveOctetString);
+		}
+
+		public byte[] ReadOctetString(Asn1Tag expectedTag)
+		{
+			ReadOnlyMemory<byte> memory;
+
+			if (TryGetPrimitiveOctetStringBytes(expectedTag, out memory))
+			{
+				return memory.ToArray();
+			}
+
+			memory = PeekEncodedValue();
+
+			// Guaranteed long enough
+			byte[] rented = ArrayPool<byte>.Shared.Rent(memory.Length);
+			int dataLength = 0;
+
+			try
+			{
+				if (!TryCopyOctetStringBytes(expectedTag, rented, out dataLength))
+				{
+					Debug.Fail("TryCopyOctetStringBytes failed with a pre-allocated buffer");
+					throw new CryptographicException();
+				}
+
+				byte[] alloc = new byte[dataLength];
+				rented.AsSpan(0, dataLength).CopyTo(alloc);
+				return alloc;
+			}
+			finally
+			{
+				CryptographicOperations.ZeroMemory(rented.AsSpan(0, dataLength));
+				ArrayPool<byte>.Shared.Return(rented);
+			}
+		}
+
+		public void ReadNull() => ReadNull(Asn1Tag.Null);
 
         public void ReadNull(Asn1Tag expectedTag)
         {

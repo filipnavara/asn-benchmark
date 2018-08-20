@@ -1,8 +1,11 @@
 ﻿using System;
 using System.Security.Cryptography.Asn1;
-using System.Security.Cryptography.X509Certificates.Asn1;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Configs;
+using BenchmarkDotNet.Environments;
+using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
+using BenchmarkDotNet.Toolchains.CoreRt;
 
 namespace AsnBench
 {
@@ -10,8 +13,11 @@ namespace AsnBench
 	{
 		static void Main(string[] args)
 		{
-			BenchmarkRunner.Run<X509Benchmark>();
-			//new X509Benchmark().Serializer_Cached();
+			var config = DefaultConfig.Instance.With(Job.Default.With(Runtime.CoreRT));
+
+			BenchmarkRunner.Run<X509Benchmark>(config);
+			//BenchmarkRunner.Run<X509Benchmark>();
+			//new X509Benchmark().Decode();
 			//AsnSerializerGenerator.Deserialize<CertificateAsn>(X509Benchmark.certificateBytes, AsnEncodingRules.DER);
 		}
 	}
@@ -60,12 +66,33 @@ jNOh1zy7xgnAWHZ9H/BgpgnX49QxcHmvDNCopJJRqxKRV/mJSgNkhw==
 		{
 			certificateBytes = Convert.FromBase64String(MicrosoftDotComBase64);
 			//deserializer = AsnSerializer.GetDeserializer(typeof(CertificateAsn), null);
+			var certificate = new CertificateAsn
+			{
+				TbsCertificate = new TbsCertificateAsn
+				{
+					Validity = new ValidityAsn
+					{
+						NotAfter = new TimeAsn()
+					},
+					SignatureAlgorithm = new AlgorithmIdentifierAsn
+					{
+						Parameters = new ReadOnlyMemory<byte>(Array.Empty<byte>())
+					},
+					SubjectPublicKeyInfo = new SubjectPublicKeyInfoAsn
+					{
+					}
+				}
+			};
 		}
 
 		[Benchmark]
-		public void Serializer_Cached()
+		public void Decode()
 		{
-			AsnSerializer.Deserialize<CertificateAsn>(certificateBytes, AsnEncodingRules.DER);
+			CertificateAsn.Decode(
+				new AsnReader(certificateBytes, AsnEncodingRules.DER),
+				out CertificateAsn certificate,
+				out _);
+			//AsnSerializer.Deserialize<CertificateAsn>(certificateBytes, AsnEncodingRules.DER);
 			/*AsnReader reader = new AsnReader(certificateBytes, AsnEncodingRules.DER);
 
 			CertificateAsn t = (CertificateAsn)deserializer(reader);

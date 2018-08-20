@@ -23,7 +23,7 @@ namespace Internal.Cryptography.Pal
 		}
 	}
 
-	internal struct CertificateDataAsn
+	internal sealed class CertificateDataAsn
 	{
 		internal struct AlgorithmIdentifier
 		{

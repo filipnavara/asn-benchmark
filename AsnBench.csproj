@@ -12,7 +12,61 @@
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <Import Project="AsnXml.targets" />
+	
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.11.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <AsnXml Include="AsnXml\AlgorithmIdentifierAsn.xml">
+      <Link>AsnXml\AlgorithmIdentifierAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\AlgorithmIdentifierAsn.cs">
+      <Link>AsnXml\AlgorithmIdentifierAsn.cs</Link>
+      <DependentUpon>AsnXml\AlgorithmIdentifierAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\SubjectPublicKeyInfoAsn.xml">
+      <Link>AsnXml\SubjectPublicKeyInfoAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\SubjectPublicKeyInfoAsn.cs">
+      <Link>AsnXml\SubjectPublicKeyInfoAsn.cs</Link>
+      <DependentUpon>AsnXml\SubjectPublicKeyInfoAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\TimeAsn.xml">
+      <Link>AsnXml\TimeAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\TimeAsn.cs">
+      <Link>AsnXml\TimeAsn.cs</Link>
+      <DependentUpon>AsnXml\TimeAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\ValidityAsn.xml">
+      <Link>AsnXml\ValidityAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\ValidityAsn.cs">
+      <Link>AsnXml\ValidityAsn.cs</Link>
+      <DependentUpon>AsnXml\ValidityAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\X509ExtensionAsn.xml">
+      <Link>AsnXml\X509ExtensionAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\X509ExtensionAsn.cs">
+      <Link>AsnXml\X509ExtensionAsn.cs</Link>
+      <DependentUpon>AsnXml\X509ExtensionAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\TbsCertificateAsn.xml">
+      <Link>AsnXml\TbsCertificateAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\TbsCertificateAsn.cs">
+      <Link>AsnXml\TbsCertificateAsn.cs</Link>
+      <DependentUpon>AsnXml\TbsCertificateAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\CertificateAsn.xml">
+      <Link>AsnXml\CertificateAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\CertificateAsn.cs">
+      <Link>AsnXml\CertificateAsn.cs</Link>
+      <DependentUpon>AsnXml\CertificateAsn.xml</DependentUpon>
+    </Compile>
   </ItemGroup>
 </Project>

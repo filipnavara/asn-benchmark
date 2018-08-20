@@ -6,21 +6,9 @@ using System.Runtime.InteropServices;
 
 namespace System.Security.Cryptography.Asn1
 {
-    [StructLayout(LayoutKind.Sequential)]
-    // https://tools.ietf.org/html/rfc3280#section-4.1.1.2
-    //
-    // AlgorithmIdentifier  ::=  SEQUENCE  {
-    //   algorithm OBJECT IDENTIFIER,
-    //   parameters ANY DEFINED BY algorithm OPTIONAL  }
-    internal struct AlgorithmIdentifierAsn
-    {
+	internal partial struct AlgorithmIdentifierAsn
+	{
         internal static readonly ReadOnlyMemory<byte> ExplicitDerNull = new byte[] { 0x05, 0x00 };
-
-        [ObjectIdentifier()]
-        public string Algorithm;
-
-        [AnyValue, OptionalValue]
-        public ReadOnlyMemory<byte>? Parameters;
 
         internal bool Equals(ref AlgorithmIdentifierAsn other)
         {

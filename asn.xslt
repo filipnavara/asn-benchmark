@@ -82,21 +82,22 @@ namespace <xsl:value-of select="@namespace" />
             writer.PopSequence(tag);
         }
 
+        internal static void Decode(AsnReader reader, out <xsl:value-of select="@name" /> decoded)
+        {
+            Decode(reader, Asn1Tag.Sequence, out decoded);
+        }
+
         internal static void Decode(AsnReader reader, out <xsl:value-of select="@name" /> decoded, out int bytesRead)
         {
-            if (reader == null)
-                throw new ArgumentNullException(nameof(reader));
-
             Decode(reader, Asn1Tag.Sequence, out decoded, out bytesRead);
         }
 
-        internal static void Decode(AsnReader reader, Asn1Tag expectedTag, out <xsl:value-of select="@name" /> decoded, out int bytesRead)
+        internal static void Decode(AsnReader reader, Asn1Tag expectedTag, out <xsl:value-of select="@name" /> decoded)
         {
             if (reader == null)
                 throw new ArgumentNullException(nameof(reader));
 
             decoded = default;
-            int localBytesRead = reader.PeekEncodedValue().Length;
             AsnReader sequenceReader = reader.ReadSequence(expectedTag);<xsl:if test="*[@explicitTag]">
             AsnReader explicitReader;</xsl:if><xsl:if test="*[@defaultDerInit]">
             AsnReader defaultReader;</xsl:if><xsl:if test="asn:SequenceOf | asn:SetOf">
@@ -104,6 +105,15 @@ namespace <xsl:value-of select="@namespace" />
             <xsl:apply-templates mode="Decode" />
 
             sequenceReader.ThrowIfNotEmpty();
+        }
+
+        internal static void Decode(AsnReader reader, Asn1Tag expectedTag, out <xsl:value-of select="@name" /> decoded, out int bytesRead)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+
+            int localBytesRead = reader.PeekEncodedValue().Length;
+            Decode(reader, expectedTag, out decoded);
             bytesRead = localBytesRead;
         }
     }
@@ -149,22 +159,29 @@ namespace <xsl:value-of select="@namespace" />
             }
         }
 
-        internal static void Decode(AsnReader reader, out <xsl:value-of select="@name" /> decoded, out int bytesRead)
+        internal static void Decode(AsnReader reader, out <xsl:value-of select="@name" /> decoded)
         {
             if (reader == null)
                 throw new ArgumentNullException(nameof(reader));
 
             decoded = default;
-            int localBytesRead = reader.PeekEncodedValue().Length;
             Asn1Tag tag = reader.PeekTag();<xsl:if test="*[@explicitTag]">
             AsnReader explicitReader;</xsl:if><xsl:if test="asn:SequenceOf | asn:SetOf">
             AsnReader collectionReader;</xsl:if>
-            <xsl:apply-templates mode="Decode" />
+            <xsl:apply-templates select="*" mode="Decode" />
             else
             {
                 throw new CryptographicException();
             }
+        }
 
+        internal static void Decode(AsnReader reader, out <xsl:value-of select="@name" /> decoded, out int bytesRead)
+        {
+            if (reader == null)
+                throw new ArgumentNullException(nameof(reader));
+
+            int localBytesRead = reader.PeekEncodedValue().Length;
+            Decode(reader, out decoded);
             bytesRead = localBytesRead;
         }
     }
@@ -415,11 +432,11 @@ namespace <xsl:value-of select="@namespace" />
     <xsl:choose>
       <xsl:when test="@optional | /asn:Choice" xml:space="preserve">
             <xsl:value-of select="$indent"/><xsl:value-of select="@typeName"/> tmp<xsl:value-of select="@name"/>;
-            <xsl:value-of select="$indent"/><xsl:value-of select="@typeName"/>.Decode(<xsl:value-of select="$readerName"/>, <xsl:call-template name="MaybeImplicitCallP"/>out tmp<xsl:value-of select="@name"/>, out _);
+            <xsl:value-of select="$indent"/><xsl:value-of select="@typeName"/>.Decode(<xsl:value-of select="$readerName"/>, <xsl:call-template name="MaybeImplicitCallP"/>out tmp<xsl:value-of select="@name"/>);
             <xsl:value-of select="$indent"/><xsl:value-of select="$name"/> = tmp<xsl:value-of select="@name"/>;
 </xsl:when>
       <xsl:otherwise xml:space="preserve">
-            <xsl:value-of select="$indent"/><xsl:value-of select="@typeName"/>.Decode(<xsl:value-of select="$readerName"/>, <xsl:call-template name="MaybeImplicitCallP"/>out <xsl:value-of select="$name"/>, out _);</xsl:otherwise>
+            <xsl:value-of select="$indent"/><xsl:value-of select="@typeName"/>.Decode(<xsl:value-of select="$readerName"/>, <xsl:call-template name="MaybeImplicitCallP"/>out <xsl:value-of select="$name"/>);</xsl:otherwise>
     </xsl:choose>
   </xsl:template>
   

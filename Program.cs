@@ -15,8 +15,8 @@ namespace AsnBench
 		{
 			var config = DefaultConfig.Instance.With(Job.Default.With(Runtime.CoreRT));
 
-			BenchmarkRunner.Run<X509Benchmark>(config);
-			//BenchmarkRunner.Run<X509Benchmark>();
+			//BenchmarkRunner.Run<X509Benchmark>(config);
+			BenchmarkRunner.Run<X509Benchmark>();
 			//new X509Benchmark().Decode();
 			//AsnSerializerGenerator.Deserialize<CertificateAsn>(X509Benchmark.certificateBytes, AsnEncodingRules.DER);
 		}
@@ -90,8 +90,7 @@ jNOh1zy7xgnAWHZ9H/BgpgnX49QxcHmvDNCopJJRqxKRV/mJSgNkhw==
 		{
 			CertificateAsn.Decode(
 				new AsnReader(certificateBytes, AsnEncodingRules.DER),
-				out CertificateAsn certificate,
-				out _);
+				out CertificateAsn certificate);
 			//AsnSerializer.Deserialize<CertificateAsn>(certificateBytes, AsnEncodingRules.DER);
 			/*AsnReader reader = new AsnReader(certificateBytes, AsnEncodingRules.DER);
 

@@ -68,5 +68,33 @@
       <Link>AsnXml\CertificateAsn.cs</Link>
       <DependentUpon>AsnXml\CertificateAsn.xml</DependentUpon>
     </Compile>
+    <AsnXml Include="AsnXml\DirectoryStringAsn.xml">
+      <Link>AsnXml\DirectoryStringAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\DirectoryStringAsn.cs">
+      <Link>AsnXml\DirectoryStringAsn.cs</Link>
+      <DependentUpon>AsnXml\DirectoryStringAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\EdiPartyNameAsn.xml">
+      <Link>AsnXml\EdiPartyNameAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\EdiPartyNameAsn.cs">
+      <Link>AsnXml\EdiPartyNameAsn.cs</Link>
+      <DependentUpon>AsnXml\EdiPartyNameAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\GeneralNameAsn.xml">
+      <Link>AsnXml\GeneralNameAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\GeneralNameAsn.cs">
+      <Link>AsnXml\GeneralNameAsn.cs</Link>
+      <DependentUpon>AsnXml\GeneralNameAsn.xml</DependentUpon>
+    </Compile>
+    <AsnXml Include="AsnXml\OtherNameAsn.xml">
+      <Link>AsnXml\OtherNameAsn.xml</Link>
+    </AsnXml>
+    <Compile Include="$(IntermediateOutputPath)\asnxml\OtherNameAsn.cs">
+      <Link>AsnXml\OtherNameAsn.cs</Link>
+      <DependentUpon>AsnXml\OtherNameAsn.xml</DependentUpon>
+    </Compile>
   </ItemGroup>
 </Project>
